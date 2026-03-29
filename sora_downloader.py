@@ -144,24 +144,128 @@ def url_from_project_y_download_response(response: Response) -> str | None:
     return None
 
 
+def _sora_download_menu_visible(page: Any) -> bool:
+    return (
+        page.get_by_role("menuitem", name=re.compile(r"^download$", re.I)).count() > 0
+    )
+
+
+def _sora_overflow_menu_trigger_indices(page: Any) -> list[int]:
+    """Indices of ⋮ triggers in click order: above comment composer, then top-to-bottom."""
+    triggers = page.locator(
+        'button[aria-haspopup="menu"], button[aria-haspopup="true"]'
+    )
+    n = triggers.count()
+    if n == 0:
+        return []
+    try:
+        ordered: list[int] = page.evaluate(
+            r"""() => {
+                const sel = 'button[aria-haspopup="menu"], button[aria-haspopup="true"]';
+                const nodes = Array.from(document.querySelectorAll(sel));
+                const metrics = nodes.map((el, idx) => {
+                    const r = el.getBoundingClientRect();
+                    return { idx, top: r.top, bottom: r.bottom };
+                });
+                let composerTop = null;
+                const trySelectors = [
+                    'textarea[placeholder*="comment" i]',
+                    'textarea[placeholder*="Comment" i]',
+                ];
+                for (const s of trySelectors) {
+                    const el = document.querySelector(s);
+                    if (el && el.getClientRects().length > 0) {
+                        composerTop = el.getBoundingClientRect().top;
+                        break;
+                    }
+                }
+                if (composerTop == null) {
+                    for (const el of document.querySelectorAll('[role="textbox"]')) {
+                        const ph = (
+                            el.getAttribute("aria-placeholder") ||
+                            el.getAttribute("placeholder") ||
+                            ""
+                        ).toLowerCase();
+                        if (ph.includes("comment") && el.getClientRects().length > 0) {
+                            composerTop = el.getBoundingClientRect().top;
+                            break;
+                        }
+                    }
+                }
+                if (composerTop == null) {
+                    const ce = document.querySelector(
+                        '[contenteditable="true"][data-placeholder*="comment" i]'
+                    );
+                    if (ce && ce.getClientRects().length > 0) {
+                        composerTop = ce.getBoundingClientRect().top;
+                    }
+                }
+                let pool = metrics;
+                if (composerTop != null) {
+                    const above = metrics.filter((m) => m.bottom < composerTop - 8);
+                    if (above.length > 0) {
+                        pool = above;
+                    }
+                }
+                pool.sort((a, b) => a.top - b.top || a.idx - b.idx);
+                return pool.map((m) => m.idx);
+            }"""
+        )
+        return [i for i in ordered if 0 <= i < n]
+    except Exception:  # pylint: disable=broad-except
+        return list(range(n))
+
+
 def open_sora_post_overflow_menu(page: Any) -> None:
-    """Open the overflow (…) menu on a Sora post page so **Download** appears."""
-    mi = page.get_by_role("menuitem", name=re.compile(r"^download$", re.I))
-    if mi.count() > 0:
+    """Open the ⋮ menu that actually contains **Download** (skip comment/thread menus)."""
+    if _sora_download_menu_visible(page):
         return
-    for sel in (
-        'button[aria-haspopup="menu"]',
-        'button[aria-haspopup="true"]',
-    ):
-        loc = page.locator(sel)
-        if loc.count() == 0:
-            continue
+
+    try:
+        vloc = page.locator("video")
+        if vloc.count() > 0:
+            vloc.first.scroll_into_view_if_needed(timeout=3_000)
+            page.wait_for_timeout(200)
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+    triggers = page.locator(
+        'button[aria-haspopup="menu"], button[aria-haspopup="true"]'
+    )
+    indices = _sora_overflow_menu_trigger_indices(page)
+    n = triggers.count()
+    tried: set[int] = set()
+
+    def try_trigger(idx: int) -> bool:
         try:
-            loc.last.click(timeout=5_000)
-            page.wait_for_timeout(500)
-            return
+            btn = triggers.nth(idx)
+            if not btn.is_visible():
+                return False
+            btn.scroll_into_view_if_needed(timeout=3_000)
+            btn.click(timeout=5_000)
+            page.wait_for_timeout(450)
+            if _sora_download_menu_visible(page):
+                return True
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(200)
         except Exception:  # pylint: disable=broad-except
+            try:
+                page.keyboard.press("Escape")
+            except Exception:  # pylint: disable=broad-except
+                pass
+        return False
+
+    for i in indices:
+        tried.add(i)
+        if try_trigger(i):
+            return
+
+    # Fallback: any trigger not yet tried (composer not found or unusual layout)
+    for i in range(n):
+        if i in tried:
             continue
+        if try_trigger(i):
+            return
 
 
 def ensure_dir(path: Path) -> None:

@@ -84,7 +84,7 @@ Capture opens a **visible browser** (default: **installed Chrome**) with a persi
 
 **No overview/grid streams (default):** **`--passive-media-capture` is off by default**, so scrolling the profile/drafts grid does **not** save preview video URLs—only URLs produced after opening each detail and using Download. Use **`--passive-media-capture`** if you want the old behavior (record all network media). By default **`--max-detail-pages 0` = no cap**. Set e.g. `--max-detail-pages 50` to limit.
 
-On Sora **post** pages (`https://sora.chatgpt.com/p/…`), **Download** lives under the **overflow menu (⋯)**. If you see **`Download API returned 401`**, sign in (same `--profile-dir`) and run capture again.
+On Sora **post** pages (`https://sora.chatgpt.com/p/…`), **Download** is only in the **main post** ⋮ menu. With **comments**, the script first **restricts** ⋮ buttons to those **above** the “add comment” field (when it can find it), then tries **top-to-bottom** by position; it **scrolls the `<video>`** into view first. Any trigger that doesn’t open **Download** is closed with Escape before the next. Remaining triggers are tried in a final fallback pass. If you see **`Download API returned 401`**, sign in (same `--profile-dir`) and run capture again.
 
 If Cloudflare appears, run with **`--verification-prompt`**, solve it in the browser, then press `Enter` in the terminal (or fix the session in that profile first).
 
