@@ -14,10 +14,10 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 
-from playwright.sync_api import Error, Request, Response, sync_playwright
+from playwright.sync_api import Error, Request, Response, TimeoutError, sync_playwright
 
 
 DEFAULT_TARGETS = [
@@ -27,6 +27,9 @@ DEFAULT_TARGETS = [
 
 VIDEO_URL_RE = re.compile(r"\.(mp4|mov|webm|m3u8)(?:\?|$)", re.IGNORECASE)
 DEFAULT_LOGIN_TIMEOUT_MS = 60_000
+DEFAULT_GOTO_WAIT_UNTIL: Literal[
+    "commit", "domcontentloaded", "load", "networkidle"
+] = "domcontentloaded"
 PAGINATION_SELECTORS = [
     "button:has-text('Load more')",
     "button:has-text('Show more')",
@@ -107,6 +110,31 @@ def make_filename(hit: MediaHit, index: int) -> str:
     key = hit.media_key or canonical_media_key(hit.url)
     short_hash = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
     return f"{index:04d}_{base}_{short_hash}{ext}"
+
+
+def navigate_for_login(
+    page: Any,
+    url: str,
+    wait_until: str,
+    timeout_ms: int,
+) -> None:
+    """Navigate and wait for main document so client-side login UIs can render."""
+    try:
+        page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+    except TimeoutError:
+        print(
+            "[warn] Navigation timed out; page is left as-is so you can finish login manually."
+        )
+    try:
+        remaining = max(5_000, min(30_000, timeout_ms))
+        page.wait_for_load_state("load", timeout=remaining)
+    except TimeoutError:
+        pass
+    try:
+        title = page.title()
+    except Exception:  # pylint: disable=broad-except
+        title = ""
+    print(f"[nav] url={page.url!r} title={title!r}")
 
 
 def try_click_pagination(page: Any) -> int:
@@ -214,12 +242,20 @@ def capture(args: argparse.Namespace) -> int:
     interrupted = False
 
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir),
-            headless=args.headless,
-            viewport={"width": 1600, "height": 1000},
-        )
+        launch_kwargs: dict[str, Any] = {
+            "user_data_dir": str(profile_dir),
+            "headless": args.headless,
+            "viewport": {"width": 1600, "height": 1000},
+            "args": ["--disable-blink-features=AutomationControlled"],
+        }
+        if args.browser_channel != "chromium":
+            launch_kwargs["channel"] = args.browser_channel
+        context = p.chromium.launch_persistent_context(**launch_kwargs)
         print("[hint] Press Ctrl+C any time to stop and save current capture.")
+        if args.browser_channel != "chromium":
+            print(
+                f"[hint] Using system {args.browser_channel} — login and SSO often work more reliably than bundled Chromium."
+            )
 
         def on_request(request: Request) -> None:
             if request.resource_type == "media":
@@ -253,14 +289,37 @@ def capture(args: argparse.Namespace) -> int:
 
         targets = args.targets or DEFAULT_TARGETS
         try:
+            bootstrap_url = "" if args.no_bootstrap else (args.bootstrap_url or "").strip()
+            if bootstrap_url:
+                print(f"\n[Bootstrap] Opening: {bootstrap_url}")
+                boot = context.new_page()
+                current_page["url"] = bootstrap_url
+                navigate_for_login(
+                    boot,
+                    bootstrap_url,
+                    args.goto_wait_until,
+                    args.login_timeout_ms,
+                )
+                if not args.headless and not args.skip_verification_prompt:
+                    print(
+                        "[verify] Log in or complete any checks in the browser, "
+                        "then press Enter here."
+                    )
+                    try:
+                        input()
+                    except EOFError:
+                        print("[verify] No interactive stdin detected; continuing.")
+                boot.close()
+
             for target in targets:
                 print(f"\nOpening: {target}")
                 page = context.new_page()
                 current_page["url"] = target
-                page.goto(
+                navigate_for_login(
+                    page,
                     target,
-                    wait_until="domcontentloaded",
-                    timeout=args.login_timeout_ms,
+                    args.goto_wait_until,
+                    args.login_timeout_ms,
                 )
 
                 if not args.headless and not args.skip_verification_prompt:
@@ -442,6 +501,28 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_LOGIN_TIMEOUT_MS,
         help="Timeout for initial page open/login load in ms (default: 60000)",
+    )
+    capture_parser.add_argument(
+        "--goto-wait-until",
+        choices=["commit", "domcontentloaded", "load", "networkidle"],
+        default=DEFAULT_GOTO_WAIT_UNTIL,
+        help="Playwright goto wait_until (default: domcontentloaded)",
+    )
+    capture_parser.add_argument(
+        "--browser-channel",
+        choices=["chromium", "chrome", "msedge"],
+        default="chrome",
+        help="Browser engine: installed Chrome/Edge, or bundled Chromium (default: chrome)",
+    )
+    capture_parser.add_argument(
+        "--bootstrap-url",
+        default="https://sora.chatgpt.com/login",
+        help="URL to open once before targets (default: https://sora.chatgpt.com/login).",
+    )
+    capture_parser.add_argument(
+        "--no-bootstrap",
+        action="store_true",
+        help="Skip opening the bootstrap URL before targets.",
     )
     capture_parser.add_argument(
         "--headless",

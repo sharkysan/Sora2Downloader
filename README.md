@@ -2,6 +2,7 @@
 
 Downloads media URLs discovered from:
 
+- `https://sora.chatgpt.com/login` (opened first by default so you can sign in)
 - `https://sora.chatgpt.com/profile`
 - `https://sora.chatgpt.com/drafts`
 
@@ -15,6 +16,8 @@ python -m venv .venv
 pip install -r requirements.txt
 python -m playwright install chromium
 ```
+
+`capture` defaults to **your installed Google Chrome** (`--browser-channel chrome`). If you do not have Chrome, install it or run with `--browser-channel msedge` or `--browser-channel chromium`.
 
 ## CLI usage (live)
 
@@ -39,7 +42,10 @@ usage: sora_downloader.py capture [-h] [--targets [TARGETS ...]]
                                   [--seconds-per-target SECONDS_PER_TARGET]
                                   [--profile-dir PROFILE_DIR]
                                   [--login-timeout-ms LOGIN_TIMEOUT_MS]
-                                  [--headless]
+                                  [--goto-wait-until {commit,domcontentloaded,load,networkidle}]
+                                  [--browser-channel {chromium,chrome,msedge}]
+                                  [--bootstrap-url BOOTSTRAP_URL]
+                                  [--no-bootstrap] [--headless]
                                   [--skip-verification-prompt]
                                   [--no-auto-explore]
                                   [--auto-scroll-steps AUTO_SCROLL_STEPS]
@@ -58,12 +64,18 @@ usage: sora_downloader.py download [-h] [--manifest MANIFEST]
 
 ## 2) Capture media URLs
 
-This opens a Chromium window with a persistent profile. It now auto-scrolls and attempts pagination clicks (`Load more`, `Next`, etc.) while capturing network requests.
+Capture opens a **visible browser** (default: **installed Chrome**) with a persistent profile. It loads `https://sora.chatgpt.com/login` once first so you can sign in, then opens each target. After navigation it prints `[nav] url=... title=...` so you can confirm you reached the real site.
 
 If Cloudflare appears, solve it in the browser window and press `Enter` in the terminal when done.
 
 ```powershell
-python sora_downloader.py capture --seconds-per-target 30
+python sora_downloader.py capture --browser-channel chrome --seconds-per-target 120 --no-auto-explore
+```
+
+If the login UI still does not appear, try Edge or a longer load wait:
+
+```powershell
+python sora_downloader.py capture --browser-channel msedge --goto-wait-until load --login-timeout-ms 120000 --seconds-per-target 120 --no-auto-explore
 ```
 
 Useful options:
@@ -85,6 +97,15 @@ Capture options:
   Persistent Chromium profile directory for login/session reuse. Default: `.playwright-profile`.
 - `--login-timeout-ms <int>`  
   Timeout for opening each target/login page. Default: `60000` (60s).
+  If timeout is reached, capture keeps the page open so you can still complete verification manually.
+- `--goto-wait-until <commit|domcontentloaded|load|networkidle>`  
+  How long `goto` waits before continuing. Default: `domcontentloaded`. Use `load` if the login UI appears late.
+- `--browser-channel <chromium|chrome|msedge>`  
+  Engine: bundled Chromium or **installed** Chrome / Edge. Default: `chrome` (best for ChatGPT SSO flows).
+- `--bootstrap-url <url>`  
+  Opened once before targets; default `https://sora.chatgpt.com/login`.
+- `--no-bootstrap`  
+  Skip the bootstrap step.
 - `--headless`  
   Run without visible browser window.
 - `--skip-verification-prompt`  
