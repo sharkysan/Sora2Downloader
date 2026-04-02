@@ -302,6 +302,62 @@ def canonical_media_key(url: str) -> str:
     return f"{host}{path}"
 
 
+def normalized_list_path(url: str) -> str:
+    path = unquote(urlparse(url.split("#")[0]).path or "").strip()
+    if len(path) > 1 and path.endswith("/"):
+        path = path[:-1]
+    return path or "/"
+
+
+def normalized_page_dedupe_key(url: str) -> str | None:
+    """Stable key for a Sora page (no query/hash): host + path; None for hub/list pages."""
+    parsed = urlparse(url.split("#")[0])
+    path = unquote(parsed.path or "").strip()
+    if len(path) > 1 and path.endswith("/"):
+        path = path[:-1]
+    if not path:
+        path = "/"
+    if path in LIST_PAGE_HUB_PATHS:
+        return None
+    host = parsed.netloc.lower().strip()
+    if not host:
+        return None
+    return f"{host}{path}"
+
+
+def post_page_key_for_dedupe(hit: MediaHit) -> str | None:
+    """One download per post/detail page (same post, renewed signed URLs)."""
+    if hit.detail_page:
+        return normalized_page_dedupe_key(hit.detail_page)
+    if hit.source_page:
+        p = normalized_list_path(hit.source_page)
+        if p.startswith("/p/"):
+            return normalized_page_dedupe_key(hit.source_page)
+    return None
+
+
+def sora_slug_for_filename(hit: MediaHit) -> str | None:
+    """Human-readable id from URL path (e.g. last segment of /p/s_…)."""
+    for raw in (hit.detail_page, hit.source_page):
+        if not raw:
+            continue
+        if raw is hit.source_page:
+            p = normalized_list_path(raw)
+            if not p.startswith("/p/"):
+                continue
+        key = normalized_page_dedupe_key(raw)
+        if not key:
+            continue
+        path = unquote(urlparse(raw.split("#")[0]).path or "").strip().rstrip("/")
+        segments = [s for s in path.split("/") if s]
+        if not segments:
+            continue
+        slug = sanitize_filename(segments[-1])
+        if slug:
+            return slug[:100]
+    return None
+
+
 def add_media_hit(
     hits: dict[str, MediaHit],
     url: str,
@@ -678,12 +734,17 @@ def capture_downloads_from_detail_pages(
 
 
 def make_filename(hit: MediaHit, index: int) -> str:
-    parsed = urlparse(hit.url)
-    base = sanitize_filename(Path(unquote(parsed.path)).stem) or f"video_{index:04d}"
     ext = extension_from_url_or_type(hit.url, hit.content_type)
     key = hit.media_key or canonical_media_key(hit.url)
-    short_hash = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
-    return f"{index:04d}_{base}_{short_hash}{ext}"
+    short_hash = hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+    slug = sora_slug_for_filename(hit)
+    if slug:
+        return f"sora_{slug}_{short_hash}{ext}"
+    parsed = urlparse(hit.url)
+    base = sanitize_filename(Path(unquote(parsed.path)).stem)
+    if base and len(base) <= 64:
+        return f"sora_{index:04d}_{base}_{short_hash}{ext}"
+    return f"sora_{index:04d}_{short_hash}{ext}"
 
 
 def navigate_for_login(
@@ -1058,6 +1119,7 @@ def download(args: argparse.Namespace) -> int:
     failed = 0
     duplicate = 0
     seen_media_keys: set[str] = set()
+    seen_post_pages: set[str] = set()
     interrupted = False
 
     with sync_playwright() as p:
@@ -1078,6 +1140,11 @@ def download(args: argparse.Namespace) -> int:
                     detail_page=item.get("detail_page"),
                 )
                 media_key = hit.media_key or canonical_media_key(hit.url)
+                post_key = post_page_key_for_dedupe(hit)
+                if post_key and post_key in seen_post_pages:
+                    duplicate += 1
+                    print(f"[skip duplicate post] {hit.url}")
+                    continue
                 if media_key in seen_media_keys:
                     duplicate += 1
                     print(f"[skip duplicate] {hit.url}")
@@ -1088,6 +1155,8 @@ def download(args: argparse.Namespace) -> int:
                 target_path = downloads_dir / filename
                 if target_path.exists() and not args.overwrite:
                     print(f"[skip exists] {target_path.name}")
+                    if post_key:
+                        seen_post_pages.add(post_key)
                     continue
 
                 try:
@@ -1096,6 +1165,8 @@ def download(args: argparse.Namespace) -> int:
                         raise Error(f"HTTP {response.status}")
                     body = response.body()
                     target_path.write_bytes(body)
+                    if post_key:
+                        seen_post_pages.add(post_key)
                     completed += 1
                     print(f"[ok] {target_path.name} ({len(body)} bytes)")
                 except Exception as exc:  # pylint: disable=broad-except
