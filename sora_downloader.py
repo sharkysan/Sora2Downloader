@@ -734,17 +734,22 @@ def capture_downloads_from_detail_pages(
 
 
 def make_filename(hit: MediaHit, index: int) -> str:
+    """Stable names: manifest order, human id from post URL when known, short hash for uniqueness."""
     ext = extension_from_url_or_type(hit.url, hit.content_type)
     key = hit.media_key or canonical_media_key(hit.url)
     short_hash = hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+    idx_str = f"{index:04d}"
     slug = sora_slug_for_filename(hit)
     if slug:
-        return f"sora_{slug}_{short_hash}{ext}"
+        max_slug = 96
+        if len(slug) > max_slug:
+            slug = slug[:max_slug].rstrip("._-")
+        return f"{idx_str}_{slug}_{short_hash}{ext}"
     parsed = urlparse(hit.url)
     base = sanitize_filename(Path(unquote(parsed.path)).stem)
     if base and len(base) <= 64:
-        return f"sora_{index:04d}_{base}_{short_hash}{ext}"
-    return f"sora_{index:04d}_{short_hash}{ext}"
+        return f"{idx_str}_{base}_{short_hash}{ext}"
+    return f"{idx_str}_video_{short_hash}{ext}"
 
 
 def navigate_for_login(
