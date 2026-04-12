@@ -1,4 +1,4 @@
-# Sora Profile/Drafts Downloader
+# Sora 2 Videos Profile/Drafts Downloader
 
 Downloads media URLs discovered from:
 
